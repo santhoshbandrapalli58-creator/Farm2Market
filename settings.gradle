@@ -1,0 +1,30 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    id 'com.android.application' version '8.13.2' apply false
+    id 'com.android.library' version '8.13.2' apply false
+    id 'org.jetbrains.kotlin.android' version '2.2.21' apply false
+    id 'org.jetbrains.kotlin.plugin.serialization' version '2.2.21' apply false
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.2.21' apply false
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.10.0'
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'Farm2Market'
+include ':customer', ':farmer', ':shared'
+project(':customer').projectDir = file('customer_app/android/app')
+project(':farmer').projectDir = file('farmer_app/android/app')
+project(':shared').projectDir = file('native_shared')

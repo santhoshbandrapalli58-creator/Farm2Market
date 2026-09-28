@@ -1,0 +1,9 @@
+.gradle/
+**/build/
+**/.gradle/
+**/.kotlin/
+**/.gradle-user/
+**/local.properties
+*.iml
+.android/
+supabase.properties
