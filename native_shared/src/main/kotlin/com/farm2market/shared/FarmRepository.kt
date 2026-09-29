@@ -1,9 +1,11 @@
 package com.farm2market.shared
 
+import android.content.Intent
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.handleDeeplinks
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.from
@@ -102,12 +104,14 @@ private data class ProductInsert(
     @SerialName("is_listed") val isListed: Boolean = true
 )
 
-class FarmRepository(url: String, key: String) {
+class FarmRepository(url: String, key: String, private val authScheme: String) {
     val live = url.startsWith("https://") && key.startsWith("sb_publishable_") &&
         !key.contains("your_key", ignoreCase = true)
     private val client: SupabaseClient? = if (live) {
         createSupabaseClient(url, key) {
             install(Auth) {
+                host = "auth"
+                scheme = authScheme
                 autoLoadFromStorage = true
                 autoSaveToStorage = true
                 alwaysAutoRefresh = true
@@ -130,10 +134,18 @@ class FarmRepository(url: String, key: String) {
 
     suspend fun signUp(email: String, password: String) {
         val auth = client?.auth ?: error("Add the Supabase URL and publishable key in supabase.properties first")
-        auth.signUpWith(Email) {
+        auth.signUpWith(Email, redirectUrl = "$authScheme://auth") {
             this.email = email.trim()
             this.password = password
         }
+    }
+
+    fun handleDeepLink(intent: Intent, onSessionSuccess: () -> Unit, onError: (Throwable) -> Unit) {
+        client?.handleDeeplinks(
+            intent = intent,
+            onSessionSuccess = { onSessionSuccess() },
+            onError = onError
+        )
     }
 
     suspend fun signIn(email: String, password: String) {

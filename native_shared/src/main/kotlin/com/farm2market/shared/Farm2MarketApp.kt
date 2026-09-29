@@ -1,6 +1,7 @@
 package com.farm2market.shared
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,9 +15,10 @@ import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.launch
 
 @Composable
-fun Farm2MarketApp(role: AppRole, url: String, key: String) {
+fun Farm2MarketApp(role: AppRole, url: String, key: String, authIntent: Intent? = null) {
     val ctx   = LocalContext.current
-    val repo  = remember { FarmRepository(url, key) }
+    val authScheme = if (role == AppRole.CUSTOMER) "farm2market-customer" else "farm2market-farmer"
+    val repo  = remember { FarmRepository(url, key, authScheme) }
     val scope = rememberCoroutineScope()
     val prefs = remember { ctx.getSharedPreferences("farm2market", 0) }
 
@@ -39,6 +41,23 @@ fun Farm2MarketApp(role: AppRole, url: String, key: String) {
     var cart        by remember { mutableStateOf(emptyList<Product>()) }
 
     val isFarmer = role == AppRole.FARMER
+
+    LaunchedEffect(authIntent?.dataString) {
+        authIntent?.let { intent ->
+            repo.handleDeepLink(
+                intent = intent,
+                onSessionSuccess = {
+                    hasAuthSession = true
+                    createAccount = false
+                    startingSession = false
+                    message = "Email confirmed. Continue to finish setting up your account."
+                },
+                onError = { error ->
+                    message = error.message ?: "The confirmation link could not be completed. Request a fresh email and try again."
+                }
+            )
+        }
+    }
 
     // ── Location helpers ──────────────────────────────────────────────────────
     val locationPermission = rememberLauncherForActivityResult(
@@ -69,6 +88,15 @@ fun Farm2MarketApp(role: AppRole, url: String, key: String) {
             }
         } else {
             locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
+
+    // Profile completion needs a location for the nearby marketplace. Ask when
+    // an authenticated user reaches this screen instead of making the permission
+    // request depend on discovering and tapping the location button.
+    LaunchedEffect(showNameEntry, hasAuthSession, location) {
+        if (showNameEntry && hasAuthSession && location == null) {
+            requestLocation()
         }
     }
 

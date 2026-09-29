@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="500" viewBox="0 0 1280 500" role="img" aria-labelledby="title desc">
+  <title id="title">Farm2Market order lifecycle</title>
+  <desc id="desc">A customer checks out, Supabase validates distance and stock and creates seller orders, the farmer updates fulfillment status, and Realtime refreshes the customer tracking screen.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#f6fbf5"/><stop offset="1" stop-color="#edf4ff"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#173c2d" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#6f8797"/></marker>
+    <style>
+      .h{font:700 27px 'Segoe UI',Arial,sans-serif;fill:#163528}.sub{font:16px 'Segoe UI',Arial,sans-serif;fill:#617468}
+      .title{font:700 18px 'Segoe UI',Arial,sans-serif;fill:#18392c}.body{font:14px 'Segoe UI',Arial,sans-serif;fill:#607469}
+      .tiny{font:700 12px 'Segoe UI',Arial,sans-serif;letter-spacing:.7px;fill:#527261}.line{stroke:#7890a0;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1280" height="500" rx="28" fill="url(#bg)"/>
+  <text x="64" y="62" class="h">From cart to doorstep</text>
+  <text x="64" y="91" class="sub">Checkout and order changes are validated by the database and synchronized to both apps.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="145" width="230" height="202" rx="22" fill="#fff" stroke="#dce8df" stroke-width="2"/>
+    <circle cx="100" cy="184" r="20" fill="#edf2ff"/><text x="100" y="191" text-anchor="middle" font-size="22">🧺</text>
+    <text x="132" y="190" class="title">1 · Customer cart</text>
+    <text x="88" y="236" class="body">Chooses products and</text><text x="88" y="258" class="body">checks out near home.</text>
+    <rect x="88" y="287" width="178" height="35" rx="17" fill="#edf2ff"/><text x="177" y="310" text-anchor="middle" class="tiny">LOCATION · ≤ 20 KM</text>
+  </g>
+  <path d="M294 246h42" class="line"/>
+
+  <g filter="url(#shadow)">
+    <rect x="340" y="145" width="280" height="202" rx="22" fill="#fff" stroke="#dce8df" stroke-width="2"/>
+    <circle cx="377" cy="184" r="20" fill="#e8f7ed"/><text x="377" y="191" text-anchor="middle" font-size="22">🛡️</text>
+    <text x="409" y="190" class="title">2 · Supabase checkout</text>
+    <text x="364" y="236" class="body">Checks account, seller radius,</text><text x="364" y="258" class="body">and available stock.</text>
+    <text x="364" y="295" class="body">Reserves stock and creates one</text><text x="364" y="317" class="body">order for each seller.</text>
+  </g>
+  <path d="M620 246h42" class="line"/>
+
+  <g filter="url(#shadow)">
+    <rect x="666" y="145" width="252" height="202" rx="22" fill="#fff" stroke="#dce8df" stroke-width="2"/>
+    <circle cx="703" cy="184" r="20" fill="#f1f8e9"/><text x="703" y="191" text-anchor="middle" font-size="22">🌾</text>
+    <text x="735" y="190" class="title">3 · Farmer inbox</text>
+    <text x="690" y="236" class="body">Seller receives the order</text><text x="690" y="258" class="body">and updates fulfillment.</text>
+    <rect x="690" y="286" width="204" height="36" rx="17" fill="#eaf6ed"/><text x="792" y="310" text-anchor="middle" class="tiny">STATUS CHANGE</text>
+  </g>
+  <path d="M918 246h42" class="line"/>
+
+  <g filter="url(#shadow)">
+    <rect x="964" y="145" width="252" height="202" rx="22" fill="#fff" stroke="#dce8df" stroke-width="2"/>
+    <circle cx="1001" cy="184" r="20" fill="#fff5e6"/><text x="1001" y="191" text-anchor="middle" font-size="22">📍</text>
+    <text x="1033" y="190" class="title">4 · Customer tracking</text>
+    <text x="988" y="236" class="body">Realtime updates show the</text><text x="988" y="258" class="body">current order status.</text>
+    <text x="988" y="302" class="tiny">NO DRIVER GPS INCLUDED</text>
+  </g>
+
+  <rect x="96" y="392" width="1088" height="54" rx="20" fill="#fff" stroke="#dce8df" stroke-width="2"/>
+  <text x="640" y="425" text-anchor="middle" class="title">pending → accepted → ready → out for delivery → delivered</text>
+  <text x="640" y="475" text-anchor="middle" class="sub">A pending order can also be cancelled. Other transitions are rejected by a database trigger.</text>
+</svg>
