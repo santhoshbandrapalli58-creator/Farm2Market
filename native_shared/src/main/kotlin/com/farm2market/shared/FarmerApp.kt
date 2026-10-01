@@ -1,6 +1,9 @@
 package com.farm2market.shared
 
 import android.location.Location
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,29 +27,32 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tabs
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class FarmerTab { DASHBOARD, PRODUCTS, ORDERS, PROFILE }
+enum class FarmerTab { DASHBOARD, PRODUCTS, ORDERS, NOTIFICATIONS, PROFILE }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // App Shell
 // ─────────────────────────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FarmerApp(
     repo: FarmRepository,
-    language: String,
-    onLanguageChange: () -> Unit,
     location: Location?,
     onRequestLocation: () -> Unit,
     displayName: String,
     onDisplayName: (String) -> Unit,
     products: List<Product>,
     orders: List<MarketOrder>,
+    notifications: List<AppNotification>,
+    onNotificationsOpened: () -> Unit,
     message: String,
     onMessage: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -57,40 +63,6 @@ fun FarmerApp(
 
     Scaffold(
         containerColor = F2MBackground,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Farm2Market", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (repo.live) "🟢 Live" else "🔵 Demo mode",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = F2MTextMuted
-                        )
-                    }
-                },
-                actions = {
-                    // Language switcher
-                    TextButton(onClick = onLanguageChange) {
-                        Icon(Icons.Default.Language, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            when (language) { "te" -> "తె"; "hi" -> "हि"; else -> "EN" },
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-                    // Refresh
-                    IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, "Refresh")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = F2MGreenPrimary,
-                    titleContentColor = Color.White,
-                    actionIconContentColor = Color.White
-                )
-            )
-        },
         bottomBar = {
             NavigationBar(
                 containerColor = Color.White,
@@ -145,6 +117,22 @@ fun FarmerApp(
                     },
                     label    = { Text("Profile") }
                 )
+                NavigationBarItem(
+                    selected = tab == FarmerTab.NOTIFICATIONS,
+                    onClick = { tab = FarmerTab.NOTIFICATIONS; onNotificationsOpened() },
+                    icon = {
+                        BadgedBox(badge = {
+                            val unread = notifications.count { it.readAt == null }
+                            if (unread > 0) Badge { Text("$unread") }
+                        }) {
+                            Icon(
+                                if (tab == FarmerTab.NOTIFICATIONS) Icons.Filled.Notifications else Icons.Outlined.Notifications,
+                                contentDescription = "Notifications"
+                            )
+                        }
+                    },
+                    label = { Text("Alerts") }
+                )
             }
         }
     ) { padding ->
@@ -153,6 +141,7 @@ fun FarmerApp(
                 FarmerTab.DASHBOARD -> FarmerDashboardScreen(products, orders, message) { tab = FarmerTab.ORDERS }
                 FarmerTab.PRODUCTS  -> FarmerProductsScreen(repo, products, message, onMessage, onRefresh)
                 FarmerTab.ORDERS    -> FarmerOrdersScreen(repo, orders, message, onMessage, onRefresh)
+                FarmerTab.NOTIFICATIONS -> NotificationsScreen(notifications)
                 FarmerTab.PROFILE   -> FarmerProfileScreen(
                     displayName, onDisplayName, location, onRequestLocation,
                     repo, onMessage, onShowAuth, onSignOut
@@ -292,11 +281,14 @@ private fun FarmerProductsScreen(
     onRefresh: () -> Unit
 ) {
     val scope  = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var showForm        by remember { mutableStateOf(false) }
     var newName         by remember { mutableStateOf("") }
     var newCategory     by remember { mutableStateOf("vegetables") }
     var newPrice        by remember { mutableStateOf("") }
     var newStock        by remember { mutableStateOf("") }
+    var selectedPhoto by remember { mutableStateOf<android.net.Uri?>(null) }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { selectedPhoto = it }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -351,6 +343,15 @@ private fun FarmerProductsScreen(
                                 )
                             }
                         }
+                        OutlinedButton(
+                            onClick = { photoPicker.launch("image/*") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.AddPhotoAlternate, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (selectedPhoto == null) "Choose product picture" else "Picture selected · Change")
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedTextField(
                                 value = newPrice, onValueChange = { newPrice = it },
@@ -375,14 +376,18 @@ private fun FarmerProductsScreen(
                                     newName.isBlank()            -> onMessage("Enter a product name.")
                                     price == null || price <= 0  -> onMessage("Enter a valid price.")
                                     stock == null || stock < 0   -> onMessage("Enter a valid stock quantity.")
+                                    selectedPhoto == null        -> onMessage("Choose a product photo before publishing.")
                                     else -> scope.launch {
                                         runCatching {
-                                            if (repo.live) repo.addProduct(newName.trim(), newCategory, price, stock)
-                                            newName = ""; newPrice = ""; newStock = ""
+                                             val imageUrl = if (repo.live && selectedPhoto != null) {
+                                                 repo.uploadProductImage(context.contentResolver, selectedPhoto!!)
+                                             } else null
+                                             if (repo.live) repo.addProduct(newName.trim(), newCategory, price, stock, imageUrl)
+                                             newName = ""; newPrice = ""; newStock = ""; selectedPhoto = null
                                             showForm = false
                                             onMessage("✅ Product published!")
                                             onRefresh()
-                                        }.onFailure { onMessage(it.message ?: "Could not add product") }
+                                        }.onFailure { onMessage(productPublishError(it)) }
                                     }
                                 }
                             },
@@ -408,6 +413,19 @@ private fun FarmerProductsScreen(
     }
 }
 
+private fun productPublishError(error: Throwable): String {
+    val detail = error.message.orEmpty()
+    return when {
+        detail.contains("row-level security", ignoreCase = true) ->
+            "Could not publish product: Supabase denied the database write. Check the farmer profile and products table policies."
+        detail.contains("bucket not found", ignoreCase = true) ->
+            "Could not upload the photo: create a public Supabase Storage bucket named 'product-images', then retry."
+        detail.contains("sign in", ignoreCase = true) || detail.contains("session", ignoreCase = true) ->
+            "Could not publish product: sign in again and retry."
+        else -> "Could not publish product. Check your connection and Supabase setup, then retry."
+    }
+}
+
 @Composable
 private fun FarmerProductCard(
     product: Product,
@@ -416,8 +434,18 @@ private fun FarmerProductCard(
     onRefresh: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    var showEditDialog by remember { mutableStateOf(false) }
+    var editName by remember { mutableStateOf(product.name) }
+    var editCategory by remember { mutableStateOf(product.category) }
+    var editPrice by remember { mutableStateOf(product.price.toString()) }
+    var editStock by remember { mutableStateOf(product.stock.toString()) }
+    var replacementPhoto by remember { mutableStateOf<Uri?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        replacementPhoto = it
+    }
     val stockColor = when {
-        product.stock == 0  -> MaterialTheme.colorScheme.error
+        !product.isListed || product.stock == 0 -> MaterialTheme.colorScheme.error
         product.stock <= 5  -> F2MAmber
         else                -> F2MGreenPrimary
     }
@@ -429,10 +457,10 @@ private fun FarmerProductCard(
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(48.dp).clip(CircleShape).background(F2MGreenContainer),
-                    contentAlignment = Alignment.Center
-                ) { Text(product.emoji, fontSize = 22.sp) }
+                ProductPhoto(
+                    url = product.imageUrl,
+                    modifier = Modifier.size(58.dp).clip(RoundedCornerShape(12.dp))
+                )
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(product.name, style = MaterialTheme.typography.titleMedium)
@@ -443,13 +471,30 @@ private fun FarmerProductCard(
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        if (product.stock == 0) "Sold out" else "${product.stock} kg",
+                        if (!product.isListed || product.stock == 0) "Sold out" else "${product.stock} kg",
                         style = MaterialTheme.typography.labelLarge,
                         color = stockColor,
                         fontWeight = FontWeight.Bold
                     )
-                    Text("in stock", style = MaterialTheme.typography.labelSmall, color = F2MTextMuted)
+                    Text(if (product.isListed) "in stock" else "hidden", style = MaterialTheme.typography.labelSmall, color = F2MTextMuted)
                 }
+            }
+
+            OutlinedButton(
+                onClick = {
+                    editName = product.name
+                    editCategory = product.category
+                    editPrice = product.price.toString()
+                    editStock = product.stock.toString()
+                    replacementPhoto = null
+                    showEditDialog = true
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Edit, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Edit name, type, price or stock")
             }
 
             // Stock controls
@@ -493,21 +538,102 @@ private fun FarmerProductCard(
                         }, modifier = Modifier.size(36.dp)
                     ) { Text("+", fontWeight = FontWeight.Bold) }
 
-                    if (product.stock > 0) {
+                    if (product.stock > 0 && product.isListed) {
                         TextButton(
                             onClick = {
                                 scope.launch {
                                     runCatching {
-                                        if (repo.live) repo.setStock(product.id, 0)
+                                        if (repo.live) repo.updateProduct(product.copy(isListed = false))
                                         onRefresh()
                                     }.onFailure { onMessage(it.message ?: "Update failed") }
                                 }
                             }
                         ) { Text("Mark sold out", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium) }
+                    } else if (!product.isListed && product.stock > 0) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    if (repo.live) repo.updateProduct(product.copy(isListed = true))
+                                    onRefresh()
+                                }.onFailure { onMessage(it.message ?: "Could not relist product") }
+                            }
+                        }) { Text("Relist") }
                     }
                 }
             }
         }
+    }
+
+    if (showEditDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditDialog = false },
+            title = { Text("Edit product") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("Product name") },
+                        singleLine = true
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(listOf("vegetables", "fruits", "greens", "grains")) { category ->
+                            FilterChip(
+                                selected = editCategory == category,
+                                onClick = { editCategory = category },
+                                label = { Text(category.replaceFirstChar { it.uppercase() }) }
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = editPrice,
+                        onValueChange = { editPrice = it },
+                        label = { Text("Price ₹/kg") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = editStock,
+                        onValueChange = { editStock = it.filter(Char::isDigit) },
+                        label = { Text("Stock (kg)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true
+                    )
+                    OutlinedButton(onClick = { photoPicker.launch("image/*") }) {
+                        Icon(Icons.Default.AddPhotoAlternate, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (replacementPhoto == null && product.imageUrl != null) "Change product photo" else if (replacementPhoto == null) "Add product photo" else "Photo selected · Change")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val price = editPrice.toDoubleOrNull()
+                    val stock = editStock.toIntOrNull()
+                    when {
+                        editName.isBlank() -> onMessage("Enter a product name.")
+                        price == null || price <= 0 -> onMessage("Enter a valid price.")
+                        stock == null || stock < 0 -> onMessage("Enter a valid stock quantity.")
+                        else -> scope.launch {
+                            runCatching {
+                                if (repo.live) repo.updateProduct(product.copy(
+                                    name = editName.trim(), category = editCategory,
+                                    price = price, stock = stock,
+                                    isListed = if (stock == 0) false else product.isListed,
+                                    imageUrl = replacementPhoto?.let {
+                                        repo.uploadProductImage(context.contentResolver, it)
+                                    } ?: product.imageUrl
+                                ))
+                                showEditDialog = false
+                                onMessage("Product updated")
+                                onRefresh()
+                            }.onFailure { onMessage(productPublishError(it)) }
+                        }
+                    }
+                }) { Text("Save changes") }
+            },
+            dismissButton = { TextButton(onClick = { showEditDialog = false }) { Text("Cancel") } }
+        )
     }
 }
 
@@ -701,6 +827,7 @@ fun StatCard(modifier: Modifier, emoji: String, value: String, label: String) {
 
 @Composable
 fun OrderCard(order: MarketOrder, isFarmer: Boolean, onAction: ((String) -> Unit)?) {
+    val language = LocalAppLanguage.current
     val nextStatus = when (order.status) {
         "pending"          -> "accepted"
         "accepted"         -> "ready"
@@ -732,6 +859,21 @@ fun OrderCard(order: MarketOrder, isFarmer: Boolean, onAction: ((String) -> Unit
             }
 
             HorizontalDivider(color = F2MDivider)
+
+            if (order.status != "cancelled") {
+                OrderProgress(order.status)
+                Text(
+                    "Estimated delivery by ${formatDeliveryEstimate(order.estimatedDeliveryAt, language)} (within 24 hours)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = F2MGreenDark,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            if (isFarmer) {
+                Text("Delivery address: ${order.deliveryAddress}", style = MaterialTheme.typography.bodySmall)
+                Text("Customer contact: ${order.contactPhone}", style = MaterialTheme.typography.bodySmall, color = F2MTextMuted)
+            }
 
             // Order items
             order.items.forEach { item ->
@@ -766,6 +908,38 @@ fun OrderCard(order: MarketOrder, isFarmer: Boolean, onAction: ((String) -> Unit
         }
     }
 }
+
+@Composable
+private fun OrderProgress(status: String) {
+    val labels = listOf("Placed", "Accepted", "Preparing", "On the way", "Delivered")
+    val statuses = listOf("pending", "accepted", "ready", "out_for_delivery", "delivered")
+    val current = statuses.indexOf(status).coerceAtLeast(0)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(F2MDivider)) {
+            Box(
+                Modifier.fillMaxWidth(current.toFloat() / (statuses.lastIndex).coerceAtLeast(1))
+                    .fillMaxHeight().background(F2MGreenPrimary)
+            )
+        }
+        Row(Modifier.fillMaxWidth()) {
+            labels.forEachIndexed { index, label ->
+                Text(
+                    label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (index <= current) F2MGreenDark else F2MTextMuted,
+                    textAlign = if (index == 0) TextAlign.Start else if (index == labels.lastIndex) TextAlign.End else TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+private fun formatDeliveryEstimate(value: String, language: String): String = runCatching {
+    OffsetDateTime.parse(value)
+        .atZoneSameInstant(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("EEE, d MMM · h:mm a", Locale.forLanguageTag(language)))
+}.getOrDefault(value)
 
 @Composable
 fun EmptyState(emoji: String, title: String, subtitle: String) {

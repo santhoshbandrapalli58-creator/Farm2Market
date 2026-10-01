@@ -1,6 +1,10 @@
 package com.farm2market.shared
 
 import android.content.Intent
+import android.content.ContentResolver
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.auth.Auth
@@ -16,19 +20,27 @@ import io.github.jan.supabase.realtime.Realtime
 import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.postgresChangeFlow
 import io.github.jan.supabase.realtime.realtime
+import io.github.jan.supabase.storage.Storage
+import io.github.jan.supabase.storage.storage
+import io.ktor.http.ContentType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.ByteArrayOutputStream
+import java.time.Instant
+import java.util.UUID
 import kotlin.random.Random
 
 enum class AppRole(val databaseValue: String) { CUSTOMER("customer"), FARMER("farmer") }
@@ -42,7 +54,9 @@ data class Product(
     val price: Double = 0.0,
     val emoji: String = "🌱",
     @SerialName("stock_quantity") val stock: Int = 0,
-    @SerialName("seller_name") val sellerName: String = "Local farm"
+    @SerialName("seller_name") val sellerName: String = "Local farm",
+    @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("is_listed") val isListed: Boolean = true
 )
 
 @Serializable
@@ -54,10 +68,14 @@ private data class NearbyProduct(
     val price: Double,
     val emoji: String,
     @SerialName("stock_quantity") val stock: Int,
+    @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("seller_name") val sellerName: String,
     @SerialName("distance_m") val distanceMeters: Double
 ) {
-    fun toProduct() = Product(productId, sellerId, name, category, price, emoji, stock, sellerName)
+    fun toProduct() = Product(
+        id = productId, sellerId = sellerId, name = name, category = category,
+        price = price, emoji = emoji, stock = stock, sellerName = sellerName, imageUrl = imageUrl
+    )
 }
 
 @Serializable
@@ -67,7 +85,10 @@ private data class OrderRecord(
     @SerialName("seller_id") val sellerId: String,
     val status: String,
     val total: Double,
-    @SerialName("created_at") val createdAt: String
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("delivery_address") val deliveryAddress: String,
+    @SerialName("contact_phone") val contactPhone: String,
+    @SerialName("estimated_delivery_at") val estimatedDeliveryAt: String
 )
 
 @Serializable
@@ -90,6 +111,9 @@ data class MarketOrder(
     val status: String,
     val total: Double,
     val createdAt: String,
+    val deliveryAddress: String,
+    val contactPhone: String,
+    val estimatedDeliveryAt: String,
     val items: List<OrderItem>
 )
 
@@ -101,7 +125,20 @@ private data class ProductInsert(
     val price: Double,
     val emoji: String,
     @SerialName("stock_quantity") val stockQuantity: Int,
-    @SerialName("is_listed") val isListed: Boolean = true
+    @SerialName("is_listed") val isListed: Boolean = true,
+    @SerialName("image_url") val imageUrl: String? = null
+)
+
+@Serializable
+data class AppNotification(
+    val id: String,
+    @SerialName("user_id") val userId: String,
+    @SerialName("order_id") val orderId: String,
+    @SerialName("event_type") val eventType: String,
+    val title: String,
+    val body: String,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("read_at") val readAt: String? = null
 )
 
 class FarmRepository(url: String, key: String, private val authScheme: String) {
@@ -118,6 +155,7 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
             }
             install(Postgrest)
             install(Realtime)
+            install(Storage)
         }
     } else null
 
@@ -195,7 +233,7 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
         }.decodeList()
     }
 
-    suspend fun addProduct(name: String, category: String, price: Double, stock: Int) {
+    suspend fun addProduct(name: String, category: String, price: Double, stock: Int, imageUrl: String?) {
         val client = requireClient()
         val sellerId = client.auth.currentUserOrNull()?.id ?: error("Sign in to add products")
         client.from("products").insert(ProductInsert(
@@ -204,14 +242,67 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
             category = category,
             price = price,
             emoji = categoryEmoji[category] ?: "🌱",
-            stockQuantity = stock
+            stockQuantity = stock,
+            imageUrl = imageUrl
         ))
+    }
+
+    suspend fun updateProduct(product: Product) {
+        val client = requireClient()
+        val sellerId = client.auth.currentUserOrNull()?.id ?: error("Sign in to update products")
+        client.from("products").update({
+            set("name", product.name.trim())
+            set("category", product.category)
+            set("price", product.price)
+            set("stock_quantity", product.stock.coerceAtLeast(0))
+            set("is_listed", product.isListed)
+            set("image_url", product.imageUrl)
+        }) {
+            filter { eq("id", product.id); eq("seller_id", sellerId) }
+        }
+    }
+
+    suspend fun uploadProductImage(contentResolver: ContentResolver, uri: Uri): String {
+        val client = requireClient()
+        val sellerId = client.auth.currentUserOrNull()?.id ?: error("Sign in to upload product photos")
+        val bytes = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) error("Choose a valid image file")
+
+            var sample = 1
+            while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
+            val options = BitmapFactory.Options().apply { inSampleSize = sample }
+            val decoded = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+                ?: error("Could not read the selected image")
+            val scale = minOf(1f, 1600f / maxOf(decoded.width, decoded.height))
+            val bitmap = if (scale < 1f) {
+                Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt(), (decoded.height * scale).toInt(), true)
+            } else decoded
+            ByteArrayOutputStream().use { output ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)
+                if (bitmap !== decoded) bitmap.recycle()
+                decoded.recycle()
+                output.toByteArray()
+            }
+        }
+        if (bytes.size > 6 * 1024 * 1024) error("Image is too large. Choose a smaller photo.")
+        val path = "$sellerId/${UUID.randomUUID()}.jpg"
+        client.storage.from(PRODUCT_IMAGE_BUCKET).upload(path, bytes) {
+            upsert = false
+            contentType = ContentType.Image.JPEG
+        }
+        return client.storage.from(PRODUCT_IMAGE_BUCKET).publicUrl(path)
     }
 
     suspend fun setStock(id: String, quantity: Int) {
         val client = requireClient()
         val sellerId = client.auth.currentUserOrNull()?.id ?: error("Sign in to update stock")
-        client.from("products").update({ set("stock_quantity", quantity.coerceAtLeast(0)) }) {
+        val safeQuantity = quantity.coerceAtLeast(0)
+        client.from("products").update({
+            set("stock_quantity", safeQuantity)
+            if (safeQuantity > 0) set("is_listed", true)
+        }) {
             filter {
                 eq("id", id)
                 eq("seller_id", sellerId)
@@ -231,7 +322,28 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
             val lines = client.from("order_items").select {
                 filter { eq("order_id", order.id) }
             }.decodeList<OrderItem>()
-            MarketOrder(order.id, order.buyerName, order.sellerId, order.status, order.total, order.createdAt, lines)
+            MarketOrder(
+                order.id, order.buyerName, order.sellerId, order.status, order.total, order.createdAt,
+                order.deliveryAddress, order.contactPhone, order.estimatedDeliveryAt, lines
+            )
+        }
+    }
+
+    suspend fun notifications(): List<AppNotification> {
+        if (!live) return emptyList()
+        val client = requireClient()
+        val userId = client.auth.currentUserOrNull()?.id ?: error("Sign in to view notifications")
+        return client.from("notifications").select {
+            filter { eq("user_id", userId) }
+        }.decodeList<AppNotification>().sortedByDescending { it.createdAt }
+    }
+
+    suspend fun markNotificationsRead() {
+        if (!live) return
+        val client = requireClient()
+        val userId = client.auth.currentUserOrNull()?.id ?: error("Sign in to update notifications")
+        client.from("notifications").update({ set("read_at", Instant.now().toString()) }) {
+            filter { eq("user_id", userId) }
         }
     }
 
@@ -246,7 +358,10 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
         }
     }
 
-    suspend fun placeOrder(items: List<Product>, latitude: Double, longitude: Double) {
+    suspend fun placeOrder(
+        items: List<Product>, latitude: Double, longitude: Double,
+        deliveryAddress: String, contactPhone: String
+    ) {
         val client = requireClient()
         if (client.auth.currentUserOrNull() == null) error("Sign in before placing an order")
         if (items.isEmpty()) error("Your cart is empty")
@@ -262,6 +377,8 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
             put("p_items", itemsArray)
             put("p_latitude", latitude)
             put("p_longitude", longitude)
+            put("p_delivery_address", deliveryAddress.trim())
+            put("p_contact_phone", contactPhone.trim())
         })
     }
 
@@ -273,7 +390,7 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
         val client = client ?: return null
         return scope.launch {
             coroutineScope {
-                listOf("products", "orders").forEach { table ->
+                listOf("products", "orders", "notifications").forEach { table ->
                     launch {
                         val channel = client.channel("farm2market-$table-${Random.nextInt()}")
                         val changes = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
@@ -298,6 +415,7 @@ class FarmRepository(url: String, key: String, private val authScheme: String) {
         ?: error("Add the Supabase URL and publishable key in supabase.properties first")
 
     companion object {
+        const val PRODUCT_IMAGE_BUCKET = "product-images"
         val categoryEmoji = mapOf(
             "vegetables" to "🥕",
             "fruits" to "🍎",

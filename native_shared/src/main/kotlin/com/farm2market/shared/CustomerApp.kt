@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -18,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,78 +29,38 @@ import kotlinx.coroutines.launch
 // Tabs
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class CustomerTab { HOME, CART, ORDERS, PROFILE }
+enum class CustomerTab { HOME, CART, ORDERS, NOTIFICATIONS, PROFILE }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // App Shell
 // ─────────────────────────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomerApp(
     repo: FarmRepository,
-    language: String,
-    onLanguageChange: () -> Unit,
     location: Location?,
     onRequestLocation: () -> Unit,
     displayName: String,
     onDisplayName: (String) -> Unit,
     products: List<Product>,
     orders: List<MarketOrder>,
+    notifications: List<AppNotification>,
+    onNotificationsOpened: () -> Unit,
     cart: List<Product>,
     onCart: (List<Product>) -> Unit,
     message: String,
     onMessage: (String) -> Unit,
     onRefresh: () -> Unit,
-    onPlaceOrder: () -> Unit,
+    onPlaceOrder: (deliveryAddress: String, contactPhone: String) -> Unit,
     onSignOut: () -> Unit,
     onShowAuth: () -> Unit
 ) {
     var tab by remember { mutableStateOf(CustomerTab.HOME) }
+    var deliveryAddress by remember { mutableStateOf("") }
+    var contactPhone by remember { mutableStateOf("") }
 
     Scaffold(
         containerColor = F2MBackground,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Farm2Market", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (repo.live) "🟢 Live" else "🔵 Demo mode",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.75f)
-                        )
-                    }
-                },
-                actions = {
-                    // Language switcher
-                    TextButton(onClick = onLanguageChange) {
-                        Icon(Icons.Default.Language, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            when (language) { "te" -> "తె"; "hi" -> "हि"; else -> "EN" },
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-                    // Location button
-                    IconButton(onClick = onRequestLocation) {
-                        Icon(
-                            if (location != null) Icons.Default.LocationOn else Icons.Default.LocationOff,
-                            "Location"
-                        )
-                    }
-                    // Refresh
-                    IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, "Refresh")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor       = F2MGreenPrimary,
-                    titleContentColor    = Color.White,
-                    actionIconContentColor = Color.White
-                )
-            )
-        },
         bottomBar = {
             NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
                 NavigationBarItem(
@@ -149,6 +111,22 @@ fun CustomerApp(
                     },
                     label    = { Text("Profile") }
                 )
+                NavigationBarItem(
+                    selected = tab == CustomerTab.NOTIFICATIONS,
+                    onClick = { tab = CustomerTab.NOTIFICATIONS; onNotificationsOpened() },
+                    icon = {
+                        BadgedBox(badge = {
+                            val unread = notifications.count { it.readAt == null }
+                            if (unread > 0) Badge { Text("$unread") }
+                        }) {
+                            Icon(
+                                if (tab == CustomerTab.NOTIFICATIONS) Icons.Filled.Notifications else Icons.Outlined.Notifications,
+                                contentDescription = "Notifications"
+                            )
+                        }
+                    },
+                    label = { Text("Alerts") }
+                )
             }
         }
     ) { padding ->
@@ -169,16 +147,21 @@ fun CustomerApp(
                 CustomerTab.CART    -> CartScreen(
                     cart         = cart,
                     location     = location,
+                    deliveryAddress = deliveryAddress,
+                    onDeliveryAddress = { deliveryAddress = it },
+                    contactPhone = contactPhone,
+                    onContactPhone = { contactPhone = it },
                     onRemove     = { p -> onCart(cart - p) },
                     onClear      = { onCart(emptyList()) },
-                    onPlaceOrder = {
-                        onPlaceOrder()
+                    onPlaceOrder = { address, phone ->
+                        onPlaceOrder(address, phone)
                         tab = CustomerTab.ORDERS
                     },
                     message      = message,
                     liveMode     = repo.live
                 )
                 CustomerTab.ORDERS  -> CustomerOrdersScreen(orders = orders, message = message)
+                CustomerTab.NOTIFICATIONS -> NotificationsScreen(notifications)
                 CustomerTab.PROFILE -> CustomerProfileScreen(
                     displayName      = displayName,
                     onDisplayName    = onDisplayName,
@@ -351,7 +334,7 @@ private fun CustomerHomeScreen(
 
 @Composable
 private fun CustomerProductCard(product: Product, inCart: Int, onAddToCart: () -> Unit) {
-    val inStock = product.stock > 0
+    val inStock = product.stock > 0 && product.isListed
     Card(
         modifier  = Modifier.fillMaxWidth(),
         shape     = RoundedCornerShape(18.dp),
@@ -361,11 +344,11 @@ private fun CustomerProductCard(product: Product, inCart: Int, onAddToCart: () -
             Modifier.fillMaxWidth().padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Emoji circle
-            Box(
-                Modifier.size(56.dp).clip(CircleShape).background(if (inStock) F2MGreenContainer else Color(0xFFF5F5F5)),
-                contentAlignment = Alignment.Center
-            ) { Text(product.emoji, fontSize = 26.sp) }
+            ProductPhoto(
+                url = product.imageUrl,
+                modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)),
+                background = if (inStock) F2MGreenContainer else Color(0xFFF5F5F5)
+            )
 
             Spacer(Modifier.width(14.dp))
 
@@ -421,9 +404,13 @@ private fun CustomerProductCard(product: Product, inCart: Int, onAddToCart: () -
 private fun CartScreen(
     cart: List<Product>,
     location: Location?,
+    deliveryAddress: String,
+    onDeliveryAddress: (String) -> Unit,
+    contactPhone: String,
+    onContactPhone: (String) -> Unit,
     onRemove: (Product) -> Unit,
     onClear: () -> Unit,
-    onPlaceOrder: () -> Unit,
+    onPlaceOrder: (String, String) -> Unit,
     message: String,
     liveMode: Boolean
 ) {
@@ -467,10 +454,10 @@ private fun CartScreen(
             val qty     = group.size
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), elevation = CardDefaults.cardElevation(2.dp)) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(48.dp).clip(CircleShape).background(F2MGreenContainer),
-                        contentAlignment = Alignment.Center
-                    ) { Text(product.emoji, fontSize = 22.sp) }
+                    ProductPhoto(
+                        url = product.imageUrl,
+                        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(10.dp))
+                    )
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(product.name, style = MaterialTheme.typography.titleSmall)
@@ -486,6 +473,39 @@ private fun CartScreen(
                             Text("Remove 1", style = MaterialTheme.typography.labelSmall)
                         }
                     }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                elevation = CardDefaults.cardElevation(2.dp)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Delivery details", style = MaterialTheme.typography.titleSmall, color = F2MGreenPrimary)
+                    OutlinedTextField(
+                        value = deliveryAddress,
+                        onValueChange = onDeliveryAddress,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Delivery address") },
+                        supportingText = { Text("Include house or building, street, and area") },
+                        minLines = 2,
+                        maxLines = 3,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    OutlinedTextField(
+                        value = contactPhone,
+                        onValueChange = { value ->
+                            if (value.length <= 20 && value.all { it.isDigit() || it in "+()- " }) onContactPhone(value)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Contact number") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
                 }
             }
         }
@@ -532,10 +552,11 @@ private fun CartScreen(
         // Place order button
         item {
             Button(
-                onClick  = onPlaceOrder,
+                onClick  = { onPlaceOrder(deliveryAddress.trim(), contactPhone.trim()) },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape    = RoundedCornerShape(16.dp),
-                enabled  = if (liveMode) location != null else true
+                enabled  = (if (liveMode) location != null else true) &&
+                    deliveryAddress.trim().length >= 8 && contactPhone.count(Char::isDigit) >= 8
             ) {
                 Icon(Icons.Default.ShoppingCartCheckout, null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(10.dp))

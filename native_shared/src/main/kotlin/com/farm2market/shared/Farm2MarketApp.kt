@@ -4,9 +4,14 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
@@ -23,7 +28,9 @@ fun Farm2MarketApp(role: AppRole, url: String, key: String, authIntent: Intent? 
     val prefs = remember { ctx.getSharedPreferences("farm2market", 0) }
 
     // ── State ─────────────────────────────────────────────────────────────────
-    var language    by remember { mutableStateOf(prefs.getString("language", "en") ?: "en") }
+    var language    by remember {
+        mutableStateOf(prefs.getString("language", "en")?.takeIf { code -> appLanguages.any { it.code == code } } ?: "en")
+    }
     var signedIn    by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf(prefs.getString("display_name", "") ?: "") }
     var identifier  by remember { mutableStateOf("") }
@@ -38,9 +45,17 @@ fun Farm2MarketApp(role: AppRole, url: String, key: String, authIntent: Intent? 
 
     var products    by remember { mutableStateOf(FarmRepository.demoProducts) }
     var orders      by remember { mutableStateOf(emptyList<MarketOrder>()) }
+    var notifications by remember { mutableStateOf(emptyList<AppNotification>()) }
     var cart        by remember { mutableStateOf(emptyList<Product>()) }
 
     val isFarmer = role == AppRole.FARMER
+
+    fun selectLanguage(code: String) {
+        if (appLanguages.any { it.code == code }) {
+            language = code
+            prefs.edit().putString("language", code).apply()
+        }
+    }
 
     LaunchedEffect(authIntent?.dataString) {
         authIntent?.let { intent ->
@@ -111,10 +126,13 @@ fun Farm2MarketApp(role: AppRole, url: String, key: String, authIntent: Intent? 
                 else repo.products(location?.latitude, location?.longitude)
             }
             val orderResult = runCatching { repo.orders(role) }
+            val notificationResult = runCatching { repo.notifications() }
             productResult.onSuccess { products = it }
                 .onFailure { message = it.message ?: "Could not refresh products" }
             orderResult.onSuccess { orders = it }
                 .onFailure { message = it.message ?: "Could not refresh orders" }
+            notificationResult.onSuccess { notifications = it }
+                .onFailure { message = it.message ?: "Could not refresh notifications" }
         }
     }
 
@@ -209,112 +227,126 @@ fun Farm2MarketApp(role: AppRole, url: String, key: String, authIntent: Intent? 
 
     // ── Render ────────────────────────────────────────────────────────────────
     Farm2MarketTheme {
-        if (showNameEntry) {
-            NameEntryScreen(
-                role = role,
-                language = language,
-                onLanguageChange = {
-                    language = when (language) { "en" -> "te"; "te" -> "hi"; else -> "en" }
-                    prefs.edit().putString("language", language).apply()
-                },
-                displayName = displayName,
-                onDisplayName = { displayName = it },
-                identifier = identifier,
-                onIdentifier = { identifier = it },
-                password = password,
-                onPassword = { password = it },
-                createAccount = createAccount,
-                onModeChange = { createAccount = it; message = "" },
-                sessionPresent = hasAuthSession,
-                location = location,
-                onRequestLocation = { requestLocation() },
-                busy = startingSession,
-                statusMessage = message,
-                liveMode = repo.live,
-                onContinue = { continueWithAccount() },
-                onContinueDemo = {
-                    if (displayName.isBlank()) message = "Enter your name to continue in demo mode."
-                    else {
-                        signedIn = true
-                        showNameEntry = false
-                        refresh()
-                    }
-                }
-            )
-        } else if (isFarmer) {
-            // ── Farmer app ────────────────────────────────────────────────────
-            FarmerApp(
-                repo              = repo,
-                language          = language,
-                onLanguageChange  = {
-                    language = when (language) { "en" -> "te"; "te" -> "hi"; else -> "en" }
-                    prefs.edit().putString("language", language).apply()
-                },
-                location          = location,
-                onRequestLocation = { requestLocation() },
-                displayName       = displayName,
-                onDisplayName     = { displayName = it },
-                products          = products,
-                orders            = orders,
-                message           = message,
-                onMessage         = { message = it },
-                onRefresh         = { refresh() },
-                onSignOut         = {
-                    scope.launch {
-                        runCatching { repo.signOut() }.onSuccess {
-                            signedIn = false; hasAuthSession = false; showNameEntry = true
-                            products = FarmRepository.demoProducts; orders = emptyList()
-                            message = "Signed out"
-                        }.onFailure { message = it.message ?: "Could not sign out" }
-                    }
-                },
-                onShowAuth        = { message = ""; showNameEntry = true }
-            )
-        } else {
-            // ── Customer app ──────────────────────────────────────────────────
-            CustomerApp(
-                repo              = repo,
-                language          = language,
-                onLanguageChange  = {
-                    language = when (language) { "en" -> "te"; "te" -> "hi"; else -> "en" }
-                    prefs.edit().putString("language", language).apply()
-                },
-                location          = location,
-                onRequestLocation = { requestLocation() },
-                displayName       = displayName,
-                onDisplayName     = { displayName = it },
-                products          = products,
-                orders            = orders,
-                cart              = cart,
-                onCart            = { cart = it },
-                message           = message,
-                onMessage         = { message = it },
-                onRefresh         = { refresh() },
-                onPlaceOrder      = {
-                    scope.launch {
-                        runCatching {
-                            val loc = location ?: error("Set your location before placing an order")
-                            if (repo.live) {
-                                repo.ensureProfile(role, displayName, loc.latitude, loc.longitude)
-                                repo.placeOrder(cart, loc.latitude, loc.longitude)
+      ProvideAppLanguage(language) {
+        Scaffold(
+            topBar = {
+                F2MAppBar(
+                    language = language,
+                    onLanguageChange = { selectLanguage(it) },
+                    statusText = if (showNameEntry) null else if (repo.live) "Live" else "Demo mode",
+                    locationReady = location != null,
+                    onRequestLocation = if (showNameEntry) null else ({ requestLocation() }),
+                    onRefresh = if (showNameEntry) null else ({ refresh() })
+                )
+            }
+        ) { appPadding ->
+            Box(Modifier.fillMaxSize().padding(appPadding)) {
+                if (showNameEntry) {
+                    NameEntryScreen(
+                        role = role,
+                        displayName = displayName,
+                        onDisplayName = { displayName = it },
+                        identifier = identifier,
+                        onIdentifier = { identifier = it },
+                        password = password,
+                        onPassword = { password = it },
+                        createAccount = createAccount,
+                        onModeChange = { createAccount = it; message = "" },
+                        sessionPresent = hasAuthSession,
+                        location = location,
+                        onRequestLocation = { requestLocation() },
+                        busy = startingSession,
+                        statusMessage = message,
+                        liveMode = repo.live,
+                        onContinue = { continueWithAccount() },
+                        onContinueDemo = {
+                            if (displayName.isBlank()) message = "Enter your name to continue in demo mode."
+                            else {
+                                signedIn = true
+                                showNameEntry = false
+                                refresh()
                             }
-                            cart    = emptyList()
-                            message = if (repo.live) "Order placed 🎉" else "Demo order placed 🎉"
-                            refresh()
-                        }.onFailure { message = it.message ?: "Order failed" }
-                    }
-                },
-                onSignOut         = {
-                    scope.launch {
-                        runCatching { repo.signOut() }.onSuccess {
-                            signedIn = false; hasAuthSession = false; showNameEntry = true
-                            cart = emptyList(); products = FarmRepository.demoProducts
-                            orders = emptyList(); message = "Signed out"
-                        }.onFailure { message = it.message ?: "Could not sign out" }
-                    }
-                },
-                onShowAuth        = { message = ""; showNameEntry = true }
-            )
+                        }
+                    )
+                } else if (isFarmer) {
+                    FarmerApp(
+                        repo = repo,
+                        location = location,
+                        onRequestLocation = { requestLocation() },
+                        displayName = displayName,
+                        onDisplayName = { displayName = it },
+                        products = products,
+                        orders = orders,
+                        notifications = notifications,
+                        onNotificationsOpened = {
+                            if (repo.live) scope.launch {
+                                runCatching { repo.markNotificationsRead(); notifications = repo.notifications() }
+                                    .onFailure { message = it.message ?: "Could not update notifications" }
+                            }
+                        },
+                        message = message,
+                        onMessage = { message = it },
+                        onRefresh = { refresh() },
+                        onSignOut = {
+                            scope.launch {
+                                runCatching { repo.signOut() }.onSuccess {
+                                    signedIn = false; hasAuthSession = false; showNameEntry = true
+                                    products = FarmRepository.demoProducts; orders = emptyList()
+                                    message = "Signed out"
+                                }.onFailure { message = it.message ?: "Could not sign out" }
+                            }
+                        },
+                        onShowAuth = { message = ""; showNameEntry = true }
+                    )
+                } else {
+                    CustomerApp(
+                        repo = repo,
+                        location = location,
+                        onRequestLocation = { requestLocation() },
+                        displayName = displayName,
+                        onDisplayName = { displayName = it },
+                        products = products,
+                        orders = orders,
+                        notifications = notifications,
+                        onNotificationsOpened = {
+                            if (repo.live) scope.launch {
+                                runCatching { repo.markNotificationsRead(); notifications = repo.notifications() }
+                                    .onFailure { message = it.message ?: "Could not update notifications" }
+                            }
+                        },
+                        cart = cart,
+                        onCart = { cart = it },
+                        message = message,
+                        onMessage = { message = it },
+                        onRefresh = { refresh() },
+                        onPlaceOrder = { deliveryAddress, contactPhone ->
+                            scope.launch {
+                                runCatching {
+                                    val loc = location ?: error("Set your location before placing an order")
+                                    if (repo.live) {
+                                        repo.ensureProfile(role, displayName, loc.latitude, loc.longitude)
+                                        repo.placeOrder(cart, loc.latitude, loc.longitude, deliveryAddress, contactPhone)
+                                    }
+                                    cart = emptyList()
+                                    message = if (repo.live) "Order placed 🎉" else "Demo order placed 🎉"
+                                    refresh()
+                                }.onFailure { message = it.message ?: "Order failed" }
+                            }
+                        },
+                        onSignOut = {
+                            scope.launch {
+                                runCatching { repo.signOut() }.onSuccess {
+                                    signedIn = false; hasAuthSession = false; showNameEntry = true
+                                    cart = emptyList(); products = FarmRepository.demoProducts
+                                    orders = emptyList(); message = "Signed out"
+                                }.onFailure { message = it.message ?: "Could not sign out" }
+                            }
+                        },
+                        onShowAuth = { message = ""; showNameEntry = true }
+                    )
+                }
+            }
         }
+      }
     }
 }

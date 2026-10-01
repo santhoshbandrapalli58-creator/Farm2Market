@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">F2M Farm2Market app icon</title>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4caf22"/>
+      <stop offset="0.48" stop-color="#075b25"/>
+      <stop offset="1" stop-color="#002d1b"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e1ff32"/>
+      <stop offset="1" stop-color="#13bd4b"/>
+    </linearGradient>
+    <linearGradient id="number" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d6ff2b"/>
+      <stop offset="1" stop-color="#22bd35"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="124" fill="url(#background)"/>
+  <path d="M248 201c-4-41 12-97 82-146-3 62-34 115-82 146Z" fill="url(#leaf)"/>
+  <path d="M242 179c-35-8-64-30-83-67 38-7 70 13 87 43Z" fill="url(#leaf)"/>
+  <path d="M48 360V222c0-15 8-23 23-23h113c12 0 17 7 10 17l-18 23c-6 8-13 12-25 12H98v27h47c14 0 21 8 21 20s-7 20-21 20H98v42c0 17-9 26-25 26s-25-9-25-26Z" fill="#fff"/>
+  <path d="M304 363V222c0-15 8-23 22-23 10 0 17 5 24 15l34 46 34-46c7-10 14-15 25-15 14 0 21 8 21 23v141c0 16-9 24-24 24-16 0-24-9-24-25v-83l-17 23c-5 7-10 11-16 11-7 0-12-4-17-11l-16-23v83c0 16-8 25-23 25s-23-8-23-24Z" fill="#fff"/>
+  <path d="M252 197c-34 0-58 19-61 47-1 11 6 18 18 18h16c8 0 12-5 15-15 3-10 9-16 20-16 13 0 21 8 21 20 0 15-17 30-40 46-34 25-57 46-68 75-5 14 3 26 20 26h109c12 0 18-7 18-19v-18c0-12-6-18-18-18h-73c13-15 31-26 49-40 29-23 44-43 44-65 0-25-19-41-45-41Z" fill="url(#number)"/>
+  <path d="M189 378c29-31 66-52 109-57l13 13c-42 4-81 22-112 55Z" fill="#063f1d"/>
+  <path d="M225 396c25-28 56-47 90-53v18c-29 6-54 18-74 35Z" fill="#063f1d"/>
+</svg>

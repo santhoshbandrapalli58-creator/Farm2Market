@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Person
@@ -30,7 +29,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,8 +45,6 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun NameEntryScreen(
     role: AppRole,
-    language: String,
-    onLanguageChange: () -> Unit,
     displayName: String,
     onDisplayName: (String) -> Unit,
     identifier: String,
@@ -79,11 +75,6 @@ fun NameEntryScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            FilledTonalButton(onClick = onLanguageChange, modifier = Modifier.align(Alignment.End)) {
-                Icon(Icons.Default.Language, null)
-                Text("  ${when (language) { "te" -> "TE"; "hi" -> "HI"; else -> "English" }}")
-            }
-            Spacer(Modifier.height(14.dp))
             Text(
                 if (isFarmer) "Farm2Market Farmer" else "Farm2Market",
                 style = MaterialTheme.typography.headlineMedium,

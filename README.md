@@ -78,13 +78,17 @@ The allowed status path is `pending → accepted → ready → out_for_delivery 
 
 Open the Supabase project dashboard, select **SQL Editor**, and run [`supabase/schema.sql`](supabase/schema.sql). The script defines:
 
-- `profiles`, `products`, `orders`, and `order_items` tables, constraints, and query indexes.
-- RLS policies for profiles, farmer-owned products, and buyer/seller order access.
+- `profiles`, `products`, `orders`, `order_items`, and `notifications` tables, including product photo URLs, delivery address/contact, and delivery estimates capped at 24 hours.
+- RLS policies for profiles, farmer-owned products, buyer/seller order access, notification ownership, and product-photo uploads.
 - `ensure_profile`, `nearby_products`, and `place_orders` functions.
-- Atomic stock reservation during checkout, product timestamp triggers, and order-status validation.
-- Supabase Realtime publication for `products` and `orders`.
+- Atomic stock reservation during checkout, product timestamp triggers, order-status validation, and order notifications.
+- Supabase Realtime publication for products, orders, and notifications.
 
 The script is written to create or replace its named policies, functions, and triggers. Review schema changes before applying them to an existing production database, and back up important data first.
+
+Product photos use Supabase Storage. In **Storage**, create a public bucket named `product-images`, limit uploads to JPEG, and set the file size limit to 6 MB. Product pictures are public; the upload policy in `schema.sql` restricts writes to each farmer's own folder. Create the bucket through the Storage API or dashboard; do not write to Storage's internal tables.
+
+The apps provide an in-app notification inbox for new farmer orders and customer order-status changes. Checkout requires a delivery address and contact number. Each order receives an estimated delivery time no more than 24 hours after placement; farmers see the details needed to fulfill delivery.
 
 ### 2. Configure email authentication
 

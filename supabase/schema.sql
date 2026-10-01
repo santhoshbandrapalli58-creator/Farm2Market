@@ -19,6 +19,7 @@ create table if not exists public.products (
   category text not null check (category in ('vegetables', 'fruits', 'greens', 'grains')),
   price numeric(10, 2) not null check (price > 0),
   emoji text not null default '🌱',
+  image_url text,
   stock_quantity integer not null default 0 check (stock_quantity >= 0),
   is_listed boolean not null default true,
   updated_at timestamptz not null default now(),
@@ -35,8 +36,29 @@ create table if not exists public.orders (
   total numeric(12, 2) not null default 0 check (total >= 0),
   buyer_latitude double precision not null,
   buyer_longitude double precision not null,
+  delivery_address text not null default 'Not provided',
+  contact_phone text not null default 'Not provided',
+  estimated_delivery_at timestamptz not null default (now() + interval '24 hours'),
   created_at timestamptz not null default now()
 );
+
+-- Keep this setup script safe to re-run against databases created by older app versions.
+alter table public.products add column if not exists image_url text;
+alter table public.orders add column if not exists delivery_address text not null default 'Not provided';
+alter table public.orders add column if not exists contact_phone text not null default 'Not provided';
+alter table public.orders add column if not exists estimated_delivery_at timestamptz not null default (now() + interval '24 hours');
+update public.orders
+  set estimated_delivery_at = created_at + interval '24 hours'
+  where estimated_delivery_at < created_at or estimated_delivery_at > created_at + interval '24 hours';
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'orders_delivery_estimate_24h_check') then
+    alter table public.orders add constraint orders_delivery_estimate_24h_check
+      check (estimated_delivery_at >= created_at and estimated_delivery_at <= created_at + interval '24 hours');
+  end if;
+end;
+$$;
 
 create table if not exists public.order_items (
   id uuid primary key default gen_random_uuid(),
@@ -47,16 +69,30 @@ create table if not exists public.order_items (
   unit_price numeric(10, 2) not null check (unit_price > 0)
 );
 
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  order_id uuid not null references public.orders(id) on delete cascade,
+  event_type text not null check (event_type in ('new_order', 'order_status')),
+  title text not null,
+  body text not null,
+  created_at timestamptz not null default now(),
+  read_at timestamptz
+);
+
 create index if not exists products_seller_id_idx on public.products(seller_id);
 create index if not exists products_market_idx on public.products(is_listed, stock_quantity);
 create index if not exists orders_buyer_created_idx on public.orders(buyer_id, created_at desc);
 create index if not exists orders_seller_created_idx on public.orders(seller_id, created_at desc);
 create index if not exists order_items_order_id_idx on public.order_items(order_id);
+create index if not exists notifications_user_created_idx on public.notifications(user_id, created_at desc);
+create index if not exists notifications_order_id_idx on public.notifications(order_id);
 
 alter table public.profiles enable row level security;
 alter table public.products enable row level security;
 alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
+alter table public.notifications enable row level security;
 
 drop policy if exists "read own profile" on public.profiles;
 create policy "read own profile" on public.profiles
@@ -96,14 +132,31 @@ create policy "participants read order items" on public.order_items
     exists (select 1 from public.orders o where o.id = order_id and
       (o.buyer_id = auth.uid() or o.seller_id = auth.uid()))
   );
+drop policy if exists "users read own notifications" on public.notifications;
+create policy "users read own notifications" on public.notifications
+  for select to authenticated using (user_id = (select auth.uid()));
+drop policy if exists "users mark own notifications read" on public.notifications;
+create policy "users mark own notifications read" on public.notifications
+  for update to authenticated using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
 
-revoke all on public.profiles, public.products, public.orders, public.order_items from anon, authenticated;
+revoke all on public.profiles, public.products, public.orders, public.order_items, public.notifications from anon, authenticated;
 grant select on public.profiles to authenticated;
 grant update (latitude, longitude) on public.profiles to authenticated;
 grant select, insert, update, delete on public.products to authenticated;
 grant select on public.orders to authenticated;
 grant update (status) on public.orders to authenticated;
 grant select on public.order_items to authenticated;
+grant select on public.notifications to authenticated;
+grant update (read_at) on public.notifications to authenticated;
+
+-- Product images live in a public Storage bucket named `product-images`.
+-- Create the bucket in the Supabase Dashboard (public, JPEG, max 6 MB).
+drop policy if exists "farmers upload own product images" on storage.objects;
+create policy "farmers upload own product images" on storage.objects
+  for insert to authenticated with check (
+    bucket_id = 'product-images' and (storage.foldername(name))[1] = (select auth.uid()::text)
+  );
 
 create or replace function public.ensure_profile(
   p_role text, p_display_name text, p_latitude double precision, p_longitude double precision
@@ -163,6 +216,7 @@ drop trigger if exists refresh_products_after_seller_move on public.profiles;
 create trigger refresh_products_after_seller_move after update of latitude, longitude on public.profiles
   for each row execute function public.refresh_products_after_seller_move();
 
+drop function if exists public.nearby_products(double precision, double precision, double precision);
 create or replace function public.nearby_products(
   p_latitude double precision,
   p_longitude double precision,
@@ -170,7 +224,7 @@ create or replace function public.nearby_products(
 )
 returns table (
   product_id uuid, seller_id uuid, name text, category text, price numeric,
-  emoji text, stock_quantity integer, seller_name text, distance_m double precision
+  emoji text, stock_quantity integer, image_url text, seller_name text, distance_m double precision
 )
 language plpgsql stable security definer set search_path = pg_catalog, extensions
 as $$
@@ -182,7 +236,7 @@ begin
   if p_radius_m <= 0 or p_radius_m > 20000 then raise exception 'Search radius cannot exceed 20 km.'; end if;
   return query
     select pr.id, pr.seller_id, pr.name, pr.category, pr.price, pr.emoji,
-      pr.stock_quantity, seller.display_name,
+      pr.stock_quantity, pr.image_url, seller.display_name,
       earth_distance(ll_to_earth(p_latitude, p_longitude),
         ll_to_earth(seller.latitude, seller.longitude)) as distance_m
     from public.products pr
@@ -197,8 +251,13 @@ $$;
 revoke all on function public.nearby_products(double precision, double precision, double precision) from public, anon;
 grant execute on function public.nearby_products(double precision, double precision, double precision) to authenticated;
 
+drop function if exists public.place_orders(jsonb, double precision, double precision);
 create or replace function public.place_orders(
-  p_items jsonb, p_latitude double precision, p_longitude double precision
+  p_items jsonb,
+  p_latitude double precision,
+  p_longitude double precision,
+  p_delivery_address text,
+  p_contact_phone text
 )
 returns jsonb language plpgsql security definer set search_path = pg_catalog, extensions
 as $$
@@ -220,6 +279,12 @@ begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Your cart is empty.';
   end if;
+  if length(trim(coalesce(p_delivery_address, ''))) < 8 or length(trim(p_delivery_address)) > 300 then
+    raise exception 'Enter a delivery address between 8 and 300 characters.';
+  end if;
+  if length(regexp_replace(coalesce(p_contact_phone, ''), '[^0-9]', '', 'g')) not between 8 and 15 then
+    raise exception 'Enter a valid contact number.';
+  end if;
   if exists (
     select 1 from jsonb_to_recordset(p_items) as i(product_id uuid, quantity integer)
       left join public.products p on p.id = i.product_id
@@ -239,9 +304,14 @@ begin
       ll_to_earth(v_seller.latitude, v_seller.longitude)
     ) > 20000 then raise exception 'A farmer in your cart is outside the 20 km delivery area.'; end if;
 
-    insert into public.orders(buyer_id, seller_id, buyer_name, status, total, buyer_latitude, buyer_longitude)
-      values (auth.uid(), v_seller.seller_id, v_buyer.display_name, 'pending', 0,
-        v_buyer.latitude, v_buyer.longitude)
+    insert into public.orders(
+      buyer_id, seller_id, buyer_name, status, total, buyer_latitude, buyer_longitude,
+      delivery_address, contact_phone, estimated_delivery_at
+    ) values (
+      auth.uid(), v_seller.seller_id, v_buyer.display_name, 'pending', 0,
+      v_buyer.latitude, v_buyer.longitude, trim(p_delivery_address), trim(p_contact_phone),
+      now() + interval '24 hours'
+    )
       returning id into v_order_id;
     v_total := 0;
 
@@ -268,8 +338,8 @@ begin
   return v_result;
 end;
 $$;
-revoke all on function public.place_orders(jsonb, double precision, double precision) from public, anon;
-grant execute on function public.place_orders(jsonb, double precision, double precision) to authenticated;
+revoke all on function public.place_orders(jsonb, double precision, double precision, text, text) from public, anon;
+grant execute on function public.place_orders(jsonb, double precision, double precision, text, text) to authenticated;
 
 create or replace function public.check_order_status_transition()
 returns trigger language plpgsql set search_path = pg_catalog
@@ -289,6 +359,52 @@ drop trigger if exists validate_order_status_transition on public.orders;
 create trigger validate_order_status_transition before update of status on public.orders
   for each row execute function public.check_order_status_transition();
 
+create or replace function public.notify_order_participants()
+returns trigger language plpgsql security definer set search_path = pg_catalog
+as $$
+declare
+  v_status_label text;
+begin
+  if tg_op = 'INSERT' then
+    if new.buyer_id is distinct from auth.uid() then
+      raise exception 'Only the customer who placed the order can create its notification.';
+    end if;
+    insert into public.notifications(user_id, order_id, event_type, title, body)
+      values (new.seller_id, new.id, 'new_order', 'New order received',
+        'A customer placed order #' || left(new.id::text, 8) || '.');
+    return new;
+  end if;
+
+  if new.status is distinct from old.status then
+    if new.seller_id is distinct from auth.uid() then
+      raise exception 'Only the assigned farmer can update the order status.';
+    end if;
+    v_status_label := case new.status
+      when 'accepted' then 'accepted'
+      when 'ready' then 'ready for pickup'
+      when 'out_for_delivery' then 'out for delivery'
+      when 'delivered' then 'delivered'
+      when 'cancelled' then 'cancelled'
+      else replace(new.status, '_', ' ')
+    end;
+    insert into public.notifications(user_id, order_id, event_type, title, body)
+      values (new.buyer_id, new.id, 'order_status', 'Order update',
+        'Order #' || left(new.id::text, 8) || ' is ' || v_status_label || '.');
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.notify_order_participants() from public, anon, authenticated;
+drop trigger if exists notify_order_participants on public.orders;
+create trigger notify_order_participants after insert or update of status on public.orders
+  for each row execute function public.notify_order_participants();
+
+-- Product images are displayed to all signed-in marketplace users; uploads are
+-- limited to the owner's folder. Storage buckets themselves are managed by the Storage API.
+drop policy if exists "signed-in users read product images" on storage.objects;
+create policy "signed-in users read product images" on storage.objects
+  for select to authenticated using (bucket_id = 'product-images');
+
 -- Realtime clients reload rows after product and order changes.
 alter table public.products replica identity full;
 alter table public.orders replica identity full;
@@ -299,6 +415,9 @@ begin
   end if;
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'orders') then
     alter publication supabase_realtime add table public.orders;
+  end if;
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications') then
+    alter publication supabase_realtime add table public.notifications;
   end if;
 end;
 $$;
